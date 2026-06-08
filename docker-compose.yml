@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: clicks
+      POSTGRES_PASSWORD: clicks
+      POSTGRES_DB: clicks
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clicks"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # One-off service: applies Alembic migrations, then exits. API and worker
+  # wait for it to complete successfully before starting.
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clicks:clicks@postgres:5432/clicks
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clicks:clicks@postgres:5432/clicks
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://clicks:clicks@postgres:5432/clicks
+      REDIS_URL: redis://redis:6379/0
+      USER_SERVICE_RATE_LIMIT: "200"
+      WORKER_CONCURRENCY: "50"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # Safe to scale: the distributed token bucket caps the *aggregate* rate to
+    # the user service at 200/s regardless of replica count.
+    # docker compose up --scale worker=3
+    deploy:
+      replicas: 2
+
+volumes:
+  pgdata:
