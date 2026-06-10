@@ -1,4 +1,4 @@
-"""Tests for the worker's coalescing, caching, persistence, and ack logic."""
+"""Worker tests: coalescing, caching, persistence, ack."""
 
 import asyncio
 from datetime import datetime, timezone
@@ -35,11 +35,11 @@ class FakeClient:
 
 @pytest.fixture
 def harness(monkeypatch):
-    """Wire fake cache, fake Redis client, and an insert spy into the worker."""
+    """Wire fake cache, fake client, and insert spy into the worker."""
     cache = FakeCache()
     client = FakeClient()
     inserted: list[list[dict]] = []
-    calls: list[str] = []  # user_ids the (slow) service was actually asked for
+    calls: list[str] = []  # user_ids the service was actually asked for
 
     async def fake_insert(rows):
         inserted.append(rows)
@@ -91,7 +91,7 @@ async def test_enriches_persists_and_acks(harness):
 
 @pytest.mark.asyncio
 async def test_coalesces_duplicate_users_in_batch(harness):
-    """3 clicks from 2 distinct users → only 2 service calls, 3 rows stored."""
+    """Duplicate users in a batch are coalesced to one service call."""
     user_a, user_b = str(uuid4()), str(uuid4())
     messages = [_msg("0-1", user_a), _msg("0-2", user_a), _msg("0-3", user_b)]
 
@@ -99,19 +99,19 @@ async def test_coalesces_duplicate_users_in_batch(harness):
 
     assert sorted(harness["service_calls"]) == sorted([user_a, user_b])
     assert len(harness["service_calls"]) == 2  # not 3 — user_a coalesced
-    assert len(harness["inserted"][0]) == 3  # all three clicks persisted
+    assert len(harness["inserted"][0]) == 3  # all clicks persisted
     assert harness["client"].acked == [("0-1", "0-2", "0-3")]
 
 
 @pytest.mark.asyncio
 async def test_cache_hit_skips_service(harness):
-    """A pre-cached user is enriched without calling the service at all."""
+    """A pre-cached user is enriched without calling the service."""
     user_id = str(uuid4())
     harness["cache"].store[user_id] = {"username": "cached", "email": "c@x.io"}
 
     await _run([_msg("0-1", user_id)])
 
-    assert harness["service_calls"] == []  # served entirely from cache
+    assert harness["service_calls"] == []
     assert harness["inserted"][0][0]["username"] == "cached"
     assert harness["client"].acked == [("0-1",)]
 
@@ -130,7 +130,7 @@ async def test_service_result_is_cached_for_next_batch(harness):
 
 @pytest.mark.asyncio
 async def test_failed_enrichment_is_not_acked(harness, monkeypatch):
-    """If the service raises, the message stays pending (not acked, not stored)."""
+    """On enrichment failure the message is not acked and not stored."""
 
     async def boom(user_id):
         raise RuntimeError("user service down")

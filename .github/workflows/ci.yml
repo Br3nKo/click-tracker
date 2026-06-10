@@ -20,7 +20,7 @@ jobs:
       - run: pytest -m "not integration" -q
 
   integration-tests:
-    name: Integration tests (Redis)
+    name: Integration tests (Redis + Postgres)
     runs-on: ubuntu-latest
     services:
       redis:
@@ -32,8 +32,22 @@ jobs:
           --health-interval 5s
           --health-timeout 3s
           --health-retries 5
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: clicks
+          POSTGRES_PASSWORD: clicks
+          POSTGRES_DB: clicks
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U clicks"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
     env:
       REDIS_URL: redis://localhost:6379/0
+      DATABASE_URL: postgresql+asyncpg://clicks:clicks@localhost:5432/clicks
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -41,6 +55,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt
-      # Exercises the Lua rate limiter and the mock's capacity enforcement
-      # against a real Redis. These are skipped in the default run.
+      # Exercises the Lua rate limiter, the mock's capacity enforcement, the
+      # migrated partitioned schema, the DB layer, and the full POST->worker->GET
+      # path against real Redis + Postgres. Skipped in the default run.
       - run: pytest -m integration -q

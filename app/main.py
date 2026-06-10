@@ -1,9 +1,4 @@
-"""FastAPI application: click ingestion and retrieval.
-
-The ingest endpoint does the minimum possible work — validate and enqueue —
-and returns ``202 Accepted`` so it can sustain the ~1000 req/s incoming rate
-without waiting on the slow enrichment pipeline.
-"""
+"""Click ingest/retrieval; ingest returns 202 to sustain ~1000 req/s."""
 
 from contextlib import asynccontextmanager
 from uuid import UUID
@@ -16,7 +11,7 @@ from app.schemas import ClickIn, ClickOut, IngestAccepted
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Open and close the DB pool and Redis client with the app lifecycle."""
+    """Open and close the DB pool and Redis client."""
     await db.init_engine()
     await queue.init_client()
     yield

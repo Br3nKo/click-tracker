@@ -21,7 +21,7 @@ async def test_burst_up_to_capacity_is_immediate():
 
 @pytest.mark.asyncio
 async def test_throttles_to_rate():
-    """Beyond capacity, acquisitions are paced at roughly ``rate`` per second."""
+    """Beyond capacity, acquisitions are paced at roughly ``rate``/sec."""
     rate = 50
     bucket = TokenBucket(rate=rate, capacity=1)
     start = time.monotonic()

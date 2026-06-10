@@ -1,20 +1,7 @@
 """Enrichment worker: drains the Redis stream, enriches, and persists.
 
-Flow per batch:
-    1. Read a batch from the consumer group (XREADGROUP).
-    2. Coalesce the batch by user_id and resolve each *unique* user once —
-       from cache if present, otherwise via the rate-limited user service.
-    3. Bulk-insert the enriched rows into PostgreSQL.
-    4. Acknowledge the messages (XACK) so they are not redelivered.
-
-Two optimisations let effective throughput exceed the 200 req/s service limit
-without ever overrunning it: a Redis cache (repeat users are free) and
-in-batch coalescing (duplicate user_ids in one batch cost a single lookup).
-Only genuine cache misses pass through the rate limiter and spend the budget.
-
-The rate limiter is a *distributed* token bucket shared by all workers, so the
-aggregate request rate to the service is capped at 200/s regardless of how many
-worker processes run. Concurrency is separately bounded by a semaphore.
+Rate limiter is a distributed token bucket: aggregate request rate to the
+service is capped across all worker processes. Only cache misses spend tokens.
 """
 
 import asyncio
@@ -35,9 +22,7 @@ async def _resolve_user(
 ) -> tuple[str, dict | None]:
     """Resolve a user's enrichment data, returning (user_id, data | None).
 
-    Tries the cache first; only a miss spends a token and calls the service.
-    Returns ``None`` data if the service call fails, so the affected messages
-    stay unacknowledged and get redelivered later.
+    On service failure returns None so messages stay unacked for redelivery.
     """
     cached = await cache.get_user(user_id)
     if cached is not None:
@@ -60,7 +45,7 @@ async def _process_batch(
     sem: asyncio.Semaphore,
 ) -> None:
     """Enrich a batch (coalesced by user), persist it, then acknowledge it."""
-    # Coalesce: resolve each distinct user just once for the whole batch.
+    # Coalesce: resolve each distinct user once per batch.
     unique_user_ids = {fields["user_id"] for _, fields in messages}
     resolved = await asyncio.gather(
         *(_resolve_user(uid, bucket, sem) for uid in unique_user_ids)
@@ -72,7 +57,7 @@ async def _process_batch(
     for message_id, fields in messages:
         data = user_data.get(fields["user_id"])
         if data is None:
-            # Enrichment failed for this user; leave the message for redelivery.
+            # Enrichment failed; leave unacked for redelivery.
             continue
         rows.append(
             {

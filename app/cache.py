@@ -1,12 +1,6 @@
-"""Enrichment cache: remembers user lookups so repeat users don't hit the
-slow user service again.
+"""Enrichment cache: only misses spend the user-service budget.
 
-Since the same user clicks many times and their username/email rarely change,
-caching by ``user_id`` lets effective throughput far exceed the 200 req/s
-service limit — only cache *misses* spend the service budget. Entries expire
-after ``cache_ttl_seconds`` to bound staleness (see README "Cache staleness").
-
-The cache reuses the Redis connection owned by ``app.queue``.
+TTL bounds staleness (see README "Cache staleness").
 """
 
 import json

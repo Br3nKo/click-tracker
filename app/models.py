@@ -1,8 +1,7 @@
-"""SQLAlchemy ORM models — the source of truth for the database schema.
+"""SQLAlchemy ORM models.
 
-The ``clicks`` table is range-partitioned by day on ``timestamp`` (see the
-README "Archiving old data"). PostgreSQL requires the partition key to be part
-of every unique/primary key, hence the composite primary key (id, timestamp).
+Postgres requires the partition key in every PK, hence composite (id,
+timestamp); ``clicks`` is range-partitioned by day on ``timestamp``.
 """
 
 from datetime import datetime
@@ -21,7 +20,7 @@ class Click(Base):
 
     __tablename__ = "clicks"
     __table_args__ = (
-        # Primary lookup path for GET /clicks/{user_id}: by user, newest first.
+        # Primary lookup: by user, newest first.
         Index("clicks_user_id_timestamp_idx", "user_id", text("timestamp DESC")),
         {"postgresql_partition_by": "RANGE (timestamp)"},
     )

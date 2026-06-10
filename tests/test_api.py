@@ -1,4 +1,4 @@
-"""Integration tests for the API, with the queue and DB faked in memory."""
+"""API integration tests with queue and DB faked in memory."""
 
 from datetime import datetime, timezone
 from uuid import UUID, uuid4

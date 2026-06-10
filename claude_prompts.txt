@@ -1,0 +1,46 @@
+Prompts I used to build this with Claude Code
+=============================================
+Roughly in order, some back-and-forth squished together.
+
+
+Design first
+------------
+- I propose FastAPI + Redis + Postgres. What are your thoughts?
+
+
+Implementation
+--------------
+- implement it. follow CLAUDE.md (PEP 8, flake8, don't overcomplicate comments)
+- don't over-engineer the structure of the project
+- implement the cache. also dedupe repeated user_ids inside a batch
+- the rate limit is per-worker, that breaks with multiple workers. 
+  make the mock service enforce 200/s 
+- implement the lua scripts. keep them simple, comment them (lua was proposed by Claude)
+- put the scripts in their own files, python string is ugly af
+- add partitioning for archiving but don't implement actual archiving
+
+
+Tests & CI (lots of back and forth)
+-----------------------------------
+- add unit tests, mock redis/postgres so they run with no infra
+- based on the tests, are you 100% sure it works? what's not covered?
+- add integration tests on real redis + postgres (lua, db, full end to end)
+- add a CI pipeline.
+- node 20 deprecation warning -> fix it
+- <couple more prompts going back and forth about what actually needs to be tested>
+
+
+Cleanup
+-------
+- review the code, simplify it, split the worker if it's doing too much
+- shorten the README, keep architecture + commands, drop the prose
+
+
+Manual testing
+--------------
+- write a python script to test overload, rate set on demand
+
+
+Docs
+----
+- write claude_prompts.txt (this file) based on our conversation, please ignore all the stupid questions I asked:)

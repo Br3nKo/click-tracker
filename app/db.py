@@ -1,7 +1,6 @@
-"""PostgreSQL access layer built on SQLAlchemy's async engine.
+"""PostgreSQL access layer on SQLAlchemy's async engine.
 
-The write path uses Core bulk ``INSERT`` (``executemany``) to keep per-row
-overhead off the hot enrichment path; the read path uses an ORM ``SELECT``.
+Writes use Core bulk INSERT to keep per-row overhead off the hot path.
 """
 
 from typing import Optional
@@ -53,10 +52,7 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
 
 
 async def insert_clicks(rows: list[dict]) -> None:
-    """Bulk-insert enriched clicks.
-
-    Each row must contain: timestamp, user_id, shop_url, username, email.
-    """
+    """Bulk-insert enriched clicks."""
     if not rows:
         return
     session_factory = get_sessionmaker()

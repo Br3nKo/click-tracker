@@ -12,7 +12,7 @@ from app.config import settings
 from app.models import Base
 
 config = context.config
-# Use the application's configured database URL (env-driven) as the source.
+# Use the app's env-driven database URL, not alembic.ini.
 config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:

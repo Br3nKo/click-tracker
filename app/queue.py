@@ -1,9 +1,7 @@
 """Redis Streams helpers for buffering clicks between ingest and workers.
 
-The stream decouples the ~1000 req/s ingest rate from the ~200 req/s
-enrichment throughput. Redis durably holds the backlog; a consumer group
-lets multiple workers share the load and re-deliver unacknowledged messages
-if a worker crashes.
+A consumer group lets multiple workers share the load and re-deliver
+unacknowledged messages if a worker crashes.
 """
 
 from typing import Optional
@@ -57,8 +55,7 @@ async def ensure_group(client: redis.Redis) -> None:
 async def publish_click(fields: dict) -> str:
     """Append a click to the stream and return its message id.
 
-    The stream is trimmed approximately to ``stream_max_len`` entries to bound
-    Redis memory use under sustained overload.
+    Trimmed approximately to bound Redis memory under sustained overload.
     """
     client = get_client()
     return await client.xadd(

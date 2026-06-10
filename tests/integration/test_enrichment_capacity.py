@@ -1,8 +1,4 @@
-"""Integration test for the mock service's capacity enforcement (real Redis).
-
-Drives the fixed-window Lua counter for real: firing more calls than the
-configured capacity within one second must yield rejections.
-"""
+"""Integration test for capacity enforcement against real Redis."""
 
 import asyncio
 from uuid import uuid4
@@ -21,8 +17,7 @@ async def test_rejects_calls_beyond_capacity(redis_client, monkeypatch):
     capacity = 5
     monkeypatch.setattr(settings, "user_service_capacity", capacity)
     monkeypatch.setattr(settings, "user_service_latency", 0.0)
-    # Point the service's capacity counter at the live client, and reset the
-    # cached script so it binds to this client.
+    # Reset cached script so it rebinds to the live client.
     monkeypatch.setattr(queue, "_client", redis_client)
     monkeypatch.setattr(enrichment, "_window_script", None)
 
@@ -35,6 +30,6 @@ async def test_rejects_calls_beyond_capacity(redis_client, monkeypatch):
 
     results = await asyncio.gather(*(call() for _ in range(20)))
 
-    # Some calls succeed, the excess is rejected — capacity is actually enforced.
+    # Excess beyond capacity must be rejected.
     assert results.count("ok") >= 1
     assert results.count("rejected") >= 1

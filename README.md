@@ -24,37 +24,6 @@ client ───────────▶ Ingest API ────────�
 client ◀───────────────────────────────────────────────── GET /clicks/{user_id} ─────────┘
 ```
 
-The key idea is **decoupling**: the ingest API accepts clicks as fast as they
-arrive and drops them into a durable Redis Stream, returning `202 Accepted`
-immediately. A pool of workers drains the stream, enriches each click, and
-bulk-inserts the results.
-
-During sustained overload the stream backlog grows — that's expected and
-acceptable for click analytics (eventual consistency). The backlog is bounded
-by `STREAM_MAX_LEN` to cap Redis memory.
-
-### Beating the 200 req/s ceiling
-
-Raw enrichment is limited to the user service's **200 req/s**. Two
-optimisations let the *effective* click throughput far exceed that without ever
-overrunning the service — only genuine cache misses spend the budget:
-
-- **Cache** ([app/cache.py](app/cache.py)) — the same user clicks repeatedly
-  and their username/email rarely change, so results are cached in Redis by
-  `user_id` (TTL `CACHE_TTL_SECONDS`). Repeat users become free cache hits.
-  With an 80% hit rate, effective throughput is `200 / (1 − 0.8) = 1000/s`.
-- **In-batch coalescing** ([app/worker.py](app/worker.py)) — within one batch,
-  duplicate `user_id`s are resolved with a single lookup, then applied to all
-  their clicks.
-
-**Cache staleness:** a cached entry can lag reality if a user changes their
-email mid-TTL, so the stored email is a point-in-time snapshot, fresh to within
-`CACHE_TTL_SECONDS`. For click analytics this is an acceptable trade of
-freshness for throughput; if strict freshness were required, the fix is
-event-based invalidation (the user service publishes change events that evict
-the key). Note the cache only narrows a staleness window the queue backlog
-already introduces.
-
 ### Why these choices
 
 | Component | Choice | Rationale |
@@ -121,6 +90,23 @@ curl -X POST http://localhost:8000/clicks \
 curl http://localhost:8000/clicks/12345678-1234-1234-1234-1234567890ab
 ```
 
+### Load / overload testing
+
+[scripts/load_test.py](scripts/load_test.py) sustains a target request rate so
+you can watch the backlog build and drain. `--unique-ratio 1.0` makes every
+click a new user (all cache misses → paced at ~200/s → backlog grows);
+`--unique-ratio 0.0` reuses a small pool (mostly cache hits → drains fast).
+
+```bash
+# 800 req/s for 20s, all unique users (maximum backpressure), with live backlog
+python scripts/load_test.py --rate 800 --duration 20 --unique-ratio 1.0 \
+    --redis-url redis://localhost:6379/0
+```
+
+Note: `XACK` does not shrink a stream's `XLEN`, so watch the consumer-group
+**lag** (printed with `--redis-url`, or `redis-cli XINFO GROUPS clicks:incoming`),
+not `XLEN`.
+
 ## Tests
 
 There are two tiers:
@@ -129,26 +115,35 @@ There are two tiers:
   required. They cover the rate limiter wrapper, enrichment, the API endpoints,
   caching + in-batch coalescing, and the worker's enrich → persist → ack cycle
   (including the "don't ack on failure" path).
-- **Integration tests** (marked `integration`) — run against a **real Redis**
-  to exercise the Lua distributed token bucket and the mock's capacity
-  enforcement. They skip automatically if Redis is unreachable.
+- **Integration tests** (marked `integration`) — run against a **real Redis and
+  PostgreSQL**. They exercise what the unit tests mock out: the Lua distributed
+  token bucket (including the aggregate-rate *safety* bound), the mock's
+  capacity enforcement, the Alembic migration + partitioned schema, the DB
+  layer, and the full `POST -> worker -> GET` path end-to-end. Each test skips
+  automatically if its service is unreachable.
 
 ```bash
 pip install -r requirements.txt
 
 pytest -m "not integration"          # unit tests only (default-safe)
-pytest                               # all; integration tests skip without Redis
+pytest                               # all; integration tests skip without services
 
-# Integration tests against a throwaway Redis:
+# Integration tests against throwaway services:
 docker run -d --rm -p 6379:6379 redis:7-alpine
-REDIS_URL=redis://localhost:6379/0 pytest -m integration
+docker run -d --rm -p 5432:5432 \
+  -e POSTGRES_USER=clicks -e POSTGRES_PASSWORD=clicks -e POSTGRES_DB=clicks \
+  postgres:16-alpine
+REDIS_URL=redis://localhost:6379/0 \
+  DATABASE_URL=postgresql+asyncpg://clicks:clicks@localhost:5432/clicks \
+  pytest -m integration
 ```
 
 ### CI
 
 [.github/workflows/ci.yml](.github/workflows/ci.yml) runs on every push to
 `main` and every pull request, in two jobs: **unit-tests** (no services) and
-**integration-tests** (with a `redis:7-alpine` service container).
+**integration-tests** (with `redis:7-alpine` and `postgres:16-alpine` service
+containers).
 
 ## Configuration
 
@@ -157,52 +152,11 @@ All settings are environment variables (see [app/config.py](app/config.py)):
 `USER_SERVICE_RATE_LIMIT`, `WORKER_CONCURRENCY`, `BATCH_SIZE`,
 `BATCH_FLUSH_SECONDS`, `USER_SERVICE_LATENCY`, `CACHE_TTL_SECONDS`.
 
-## Reliability notes
-
-- **At-least-once delivery.** Messages are `XACK`-ed only after a successful
-  DB insert. A worker crash mid-batch leaves messages pending; they are
-  redelivered (a startup `XAUTOCLAIM` sweep, noted as a follow-up, would
-  reclaim messages from dead consumers). Duplicates are possible — add a unique
-  constraint or idempotency key if exactly-once matters.
-- **Horizontal scaling.** Both the API and workers are stateless; run more
-  replicas behind a load balancer / the shared consumer group. The rate limit
-  to the user service is enforced by a *distributed* token bucket
-  ([app/ratelimit.py](app/ratelimit.py)) keyed in Redis, so the aggregate stays
-  at 200 req/s no matter how many workers run — each just gets a smaller share.
-- **Capacity is tested, not assumed.** The faked user service
-  ([app/enrichment.py](app/enrichment.py)) enforces its own 200/s ceiling and
-  raises `UserServiceOverloaded` (like a 429) if exceeded. With the distributed
-  limiter the service is never overrun; a per-worker limiter run across N
-  workers would trip it — which is exactly the bug the shared limiter fixes.
-- **Backpressure.** If the user service degrades, the backlog grows but ingest
-  stays healthy. The stream `MAXLEN` bounds memory; beyond that, oldest
-  unprocessed entries are trimmed (a dead-letter stream is the production fix).
-
 ## Archiving old data (design)
 
-Click data is append-only and loses query value with age, so the goal is to
-keep the hot table small while retaining history cheaply. Daily range
-partitioning (already in the schema) makes this clean:
+Daily range partitioning (in the schema) makes archiving cheap:
 
-1. **Partition by day.** Each day's clicks live in their own partition
-   (`clicks_2026_06_08`, …). A scheduled job (e.g. `pg_partman` or a nightly
-   cron) pre-creates tomorrow's partition and is the only thing writing DDL.
-
-2. **Detach + export cold partitions.** Once a partition ages past the hot
-   window (say 30 days), `ALTER TABLE clicks DETACH PARTITION` removes it from
-   the live table instantly (metadata-only, no row scan). Export it to columnar
-   files (Parquet) in object storage (S3/GCS) for cheap long-term retention and
-   ad-hoc analytics (Athena / BigQuery / DuckDB).
-
-3. **Drop the partition.** After the export is verified, `DROP TABLE` the
-   detached partition. This reclaims space instantly with no `DELETE` bloat,
-   no `VACUUM` pressure, and no lock on the live table.
-
-4. **Tiering by age (optional).** hot (Postgres, indexed) → warm (compressed
-   partition or a separate cheaper Postgres) → cold (Parquet in S3, queried on
-   demand). Lifecycle policies on the bucket can expire truly old data.
-
-Why partitioning over bulk `DELETE`: deleting millions of rows is slow, bloats
-the table, and demands aggressive vacuuming. Detaching/dropping a partition is
-an `O(1)` metadata operation. Range partitioning on `timestamp` also lets the
-planner prune partitions for time-bounded queries.
+1. Pre-create daily partitions (`pg_partman` or a cron job).
+2. `ALTER TABLE clicks DETACH PARTITION` once past the hot window (e.g. 30 days).
+3. Export the detached partition to Parquet in object storage (S3/GCS).
+4. `DROP TABLE` the detached partition.
